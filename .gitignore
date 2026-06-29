@@ -15,3 +15,9 @@ experiment-*
 .mypy_cache/*
 not_tracked_dir/
 .vscode
+
+# Sketch-DETR baseline: generated artifacts (not source)
+outputs/
+logs/
+annotations/temp_json_*.json
+wandb/
