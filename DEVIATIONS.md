@@ -14,18 +14,19 @@ Deliverable #4 (handover §6): every deviation from Riba et al.'s spec, with rea
 ## D2 — Sketch backbone ζ (trained in-house; two checkpoints)
 - **Spec:** ζ = ResNet-50 sketch classifier trained on the COCO-intersecting sketch classes.
   Closed-world → all 56; open-world → seen 42.
-- **What we do:** train ζ ourselves (ImageNet-init ResNet-50, fc→#classes, finetuned QD classifier;
-  f_s = 2048-d global-pooled feature), **two checkpoints**:
-    - `zeta_qd_cw56_resnet50.pth` — all 56 COCO∩QD classes → **Job A (CW)**.
-    - `zeta_qd_ow42_resnet50.pth` — 42 seen (exclude Set B) → **Job B (OW)**.
-- **Why not reuse LocFormer's ζ:** (1) **CW fairness** — LocFormer's ζ excludes Set B, which would
-  deflate the CW reproduction on those 14 categories and bias us against the ±0.010 gate; the paper's
-  CW ζ sees all intersecting classes. (2) **OW contamination risk** — the only available LocFormer ζ
-  was extracted from the `lf_qd_rn50` *detector*, which does **not** freeze `sketch_embedding`, so ζ
-  was finetuned during detector training and may have seen Set B sketches as queries. Training fresh
-  removes both issues and makes ζ a pure classifier (closer to the paper).
-- **Recipe deviation:** the paper trains ζ on the COCO-intersecting subset (56/42); LocFormer trained
-  on ~331 QD classes minus Set B. We follow the paper (56/42).
+- **What we do (final, per user):**
+    - **Job B (OW):** `r50-sgd/best.pth` — the user's pretrained ResNet-50, **331 QD classes minus
+      Set B**, val_acc 0.8507 → `checkpoints/zeta_ow_r50sgd.pth`. Leak-free (Set B never a label)
+      and a rich general sketch encoder. A ζ exposed to *more non-held-out* classes is legitimately
+      *stronger* (better embedding geometry → better transfer), not contamination — only Set B as a
+      label would be a leak.
+    - **Job A (CW):** **56 COCO-intersecting** classes, paper-faithful — **user provides the trained
+      RN50** (we do not train it). `--sketch_ckpt` loads it directly (format-agnostic loader).
+- **Earlier wrong turn (corrected):** I first *extracted* ζ from the `lf_qd_rn50` detector's
+  `sketch_embedding.*`. That detector does **not** freeze the sketch encoder, so that copy was
+  detector-finetuned (contamination-risky). Discarded in favour of the clean standalone `r50-sgd`.
+- **Known confound:** OW ζ is 331-class, CW ζ is 56-class — asymmetric coverage between the two jobs.
+  Reported so the CW↔OW gap isn't over-attributed to category transfer alone.
 
 ## D3 — Sketch normalisation
 - **Spec:** unspecified preprocessing for ζ.

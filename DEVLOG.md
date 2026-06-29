@@ -17,11 +17,25 @@ All metrics reported as **decimals** (e.g. 0.419), never percentage points.
 - **GT-calibration gate:** feed GT as predictions → **mAP 1.0000 / AP50 1.0000** (binary-GT,
   coordinate space, category-id wiring all correct).
 
-## Open items / decisions
-- **ζ per job (user decision):** r50-sgd (QD-minus-SetB) for **Job B (OW)**; a separate
-  all-intersecting-classes ζ for **Job A (CW)**. User to place weights; standalone
-  `r50-sgd/best.pth` is not currently on disk (reported).
-- **Eval protocol:** Sketch-DETR scores under the thesis §4 seed-14 binary-GT protocol (same as
-  CASF), so baseline and method are one eval. See DEVIATIONS.md D1.
+## Wiring gates — all green (pipeline fully validated)
+- **GT-calibration:** GT-as-prediction → mAP 1.0000 / AP50 1.0000.
+- **Overfit (8 imgs):** loss 26.9→1.55, class_error 100→0.0 (escapes all-background basin ~it250);
+  note: class_error legitimately sits at 100 for the first ~200 steps before flipping.
+- **Determinism:** two `--eval` launches bit-identical 12-stat.
+- **Driver:** train_one_epoch + per-epoch eval + checkpointing run end-to-end; 10.8M trainable;
+  4.7 GB at bs=4 (so bs=16 fits easily).
+
+## ζ plan (user decisions)
+- **Job B (OW):** `r50-sgd` (QD-minus-Set B, 331-class, val_acc 0.8507) → `checkpoints/zeta_ow_r50sgd.pth`.
+  Wired & verified. The ζ loader is format-agnostic (raw model_state | backbone_state | model |
+  state_dict, ±module. prefix), asserts all 318 backbone tensors matched.
+- **Job A (CW):** **56 COCO-intersecting** classes, paper-faithful (decision B) — **user will provide
+  the trained RN50** (decision C); we do NOT train it. Drop at e.g. `checkpoints/zeta_cw56.pth`;
+  `--sketch_ckpt` loads it directly.
+- Known confound: OW ζ is 331-class, CW ζ is 56-class (asymmetric); see DEVIATIONS.md D2.
+
+## Ready to launch (scripts/RUNBOOK.md + scripts/run_job.sh)
+- Job B (OW) is launch-ready now. Job A fires the moment the CW RN50 lands.
+- **Eval protocol:** scores under the thesis §4 seed-14 binary-GT protocol (same as CASF). D1.
 
 See DEVIATIONS.md for the full list of deviations from the paper spec.

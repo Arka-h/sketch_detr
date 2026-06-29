@@ -34,6 +34,8 @@ def get_args_parser():
     parser.add_argument('--data_frac', default=1.0, type=float)
     parser.add_argument('--deterministic', action='store_true',
                         help='enable bit-deterministic eval (handover §4)')
+    parser.add_argument('--eval_every', default=5, type=int,
+                        help='run full-val eval every K epochs (final epoch always evaluated)')
     parser.add_argument('--gt_calib', action='store_true',
                         help='run GT-calibration probe on val seed-14 binary GT and exit')
     return parser
@@ -110,6 +112,15 @@ def main(args):
         train_stats = train_one_epoch(model, criterion, data_loader_train, optimizer,
                                       device, epoch, args.clip_max_norm)
         lr_scheduler.step()
+        if output_dir and utils.is_main_process():
+            utils.save_on_master({'model': model_without_ddp.state_dict(),
+                                  'optimizer': optimizer.state_dict(),
+                                  'lr_scheduler': lr_scheduler.state_dict(),
+                                  'epoch': epoch, 'args': args},
+                                 output_dir / 'checkpoint.pth')
+        do_eval = (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1
+        if not do_eval:
+            continue
         stats, _ = evaluate(model, postprocessors, data_loader_val, base_ds, device)
         bb = stats['coco_eval_bbox']
         print(f"[epoch {epoch}] mAP={bb[0]:.4f} AP50={bb[1]:.4f} AP75={bb[2]:.4f} "
@@ -119,11 +130,6 @@ def main(args):
                          'coco_eval_bbox': bb, 'epoch': epoch}
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
-            utils.save_on_master({'model': model_without_ddp.state_dict(),
-                                  'optimizer': optimizer.state_dict(),
-                                  'lr_scheduler': lr_scheduler.state_dict(),
-                                  'epoch': epoch, 'args': args},
-                                 output_dir / 'checkpoint.pth')
     print('Training time', str(datetime.timedelta(seconds=int(time.time() - start))))
 
 

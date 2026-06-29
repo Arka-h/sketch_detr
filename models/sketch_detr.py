@@ -30,12 +30,25 @@ class SketchEncoder(nn.Module):
         self.feat_dim = 2048
         if ckpt_path:
             ck = torch.load(ckpt_path, map_location='cpu')
-            bs = ck['backbone_state'] if 'backbone_state' in ck else ck
+            # format-agnostic: accept backbone_state | model_state | model | state_dict | raw,
+            # strip any 'module.' (DDP) prefix and the classifier head (fc.*).
+            val_acc = ck.get('val_acc') if isinstance(ck, dict) else None
+            if isinstance(ck, dict):
+                for key in ('backbone_state', 'model_state', 'model', 'state_dict'):
+                    if key in ck and isinstance(ck[key], dict):
+                        ck = ck[key]; break
+            bs = {(k[len('module.'):] if k.startswith('module.') else k): v
+                  for k, v in ck.items()}
             bs = {k: v for k, v in bs.items() if not k.startswith('fc.')}
+            ref = {k for k in self.body.state_dict() if not k.startswith('fc.')}
+            matched = {k for k in bs if k in ref}
             missing, unexpected = self.body.load_state_dict(bs, strict=False)
             missing = [k for k in missing if not k.startswith('fc.')]
-            print(f"[ζ] loaded {ckpt_path}: filled={len(bs)} missing={len(missing)} "
-                  f"unexpected={len(unexpected)}")
+            print(f"[ζ] loaded {ckpt_path}: matched={len(matched)}/{len(ref)} "
+                  f"missing={len(missing)} unexpected={len(unexpected)} val_acc={val_acc}")
+            assert len(missing) == 0 and len(matched) == len(ref), (
+                f"ζ load incomplete: matched {len(matched)}/{len(ref)}, missing {missing[:5]} "
+                f"— wrong/incompatible checkpoint?")
 
     @torch.no_grad()
     def forward(self, sketches):  # (B,3,H,W) → (B,2048)
