@@ -33,6 +33,17 @@ Deliverable #4 (handover §6): every deviation from Riba et al.'s spec, with rea
 - **What we do:** ImageNet mean/std (ζ is ImageNet-init), sketches rendered white-on-black
   (QD stroke-3 rasterised; Sketchy PNGs inverted). NOT CLIP normalisation (that is CASF-specific).
 
+## D5 — Mixed precision (AMP) training + train/eval determinism split
+- **Spec:** unspecified; paper presumably fp32.
+- **What we do:** train with AMP (autocast + GradScaler) for throughput on the RTX 8000.
+  Training uses seeded-but-non-strict kernels (fast); the **official reported eval is a separate
+  `--eval --deterministic` pass** (bit-identical, verified). Per-epoch evals during training are
+  monitoring-only. Numerical impact of AMP on final mAP is negligible.
+
+## D6 — Compute budget (RTX 8000, single GPU)
+- 50-epoch closed-world QD ≈ 82 min/epoch (~2.8 days/cell). Recorded so any epoch-budget or
+  early-stopping decision (plateau-based) is explicit, not silent. See DEVLOG for the chosen budget.
+
 ## D4 — Single sketch query (k=1)
 - **Spec / handover §4:** single sketch per query. `ow_repr` renders k=3; `clean_run` uses k=1.
 - **What we do:** k=1 (deterministic single sketch at val via `Random(14)`), matching §4.

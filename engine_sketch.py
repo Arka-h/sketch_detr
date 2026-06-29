@@ -16,7 +16,8 @@ def _stack_sketches(sketches, device):
     return torch.stack([s for s in sketches], dim=0).to(device)
 
 
-def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max_norm=0):
+def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max_norm=0,
+                    scaler=None):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -30,10 +31,12 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max
         targets = [{k: v.to(device) for k, v in t.items() if torch.is_tensor(v)} for t in targets]
         sketches = _stack_sketches(sketches, device)
 
-        outputs = model(samples, sketches)
-        loss_dict = criterion(outputs, targets)
-        weight_dict = criterion.weight_dict
-        losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
+        # AMP forward (autocast); frozen backbone/ζ/encoder + decoder/heads run fp16 on matmuls
+        with torch.cuda.amp.autocast(enabled=scaler is not None):
+            outputs = model(samples, sketches)
+            loss_dict = criterion(outputs, targets)
+            weight_dict = criterion.weight_dict
+            losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         loss_dict_reduced = utils.reduce_dict(loss_dict)
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
@@ -46,10 +49,18 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max
             sys.exit(1)
 
         optimizer.zero_grad()
-        losses.backward()
-        if max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-        optimizer.step()
+        if scaler is not None:
+            scaler.scale(losses).backward()
+            if max_norm > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            losses.backward()
+            if max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            optimizer.step()
 
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled,
                              class_error=loss_dict_reduced['class_error'])

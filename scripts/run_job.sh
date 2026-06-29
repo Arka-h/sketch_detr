@@ -49,5 +49,9 @@ echo "[run_job] holdout(SetB if open): backpack bicycle clock couch dog elephant
     --lr 1e-4 --weight_decay 1e-4 --clip_max_norm 0.1 \
     --batch_size "$BS" --num_workers "$WORKERS" \
     --eval_every "$EVAL_EVERY" \
-    --deterministic \
     --output_dir "$OUT" 2>&1 | tee "$OUT/train.log"
+# NOTE: training runs fast (AMP, seeded, non-strict kernels). The OFFICIAL reported
+# number is a SEPARATE deterministic eval pass on the best checkpoint:
+#   python main_sketch.py --eval --deterministic --sketch_cond <C> --sketch_ckpt <ζ> \
+#     --resume "$OUT/checkpoint.pth" --train_scheme_world "$WORLD" --sketch_dataset "$DATASET" \
+#     --coco_path "$COCO_PATH" --batch_size 4

@@ -36,6 +36,9 @@ def get_args_parser():
                         help='enable bit-deterministic eval (handover §4)')
     parser.add_argument('--eval_every', default=5, type=int,
                         help='run full-val eval every K epochs (final epoch always evaluated)')
+    parser.add_argument('--no_amp', dest='amp', action='store_false',
+                        help='disable mixed-precision training (AMP on by default)')
+    parser.set_defaults(amp=True)
     parser.add_argument('--gt_calib', action='store_true',
                         help='run GT-calibration probe on val seed-14 binary GT and exit')
     return parser
@@ -106,11 +109,12 @@ def main(args):
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=utils.collate_fn, num_workers=args.num_workers)
 
-    print("Start training")
+    scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    print(f"Start training (amp={args.amp})")
     start = time.time()
     for epoch in range(args.start_epoch, args.epochs):
         train_stats = train_one_epoch(model, criterion, data_loader_train, optimizer,
-                                      device, epoch, args.clip_max_norm)
+                                      device, epoch, args.clip_max_norm, scaler=scaler)
         lr_scheduler.step()
         if output_dir and utils.is_main_process():
             utils.save_on_master({'model': model_without_ddp.state_dict(),
