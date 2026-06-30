@@ -127,6 +127,8 @@ def main(args):
                                name=args.wandb_name or (output_dir.name if output_dir else None),
                                config=vars(args))
         wandb_run_id = wandb_run.id
+        from util.wandb_health import log_run_provenance
+        log_run_provenance(wandb_run, repo_dir=os.path.dirname(os.path.abspath(__file__)))
         wandb.watch(model, log='all', log_freq=args.wandb_watch_freq)  # per-component grad histograms
 
     if args.eval:

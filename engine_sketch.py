@@ -10,6 +10,7 @@ import torch
 
 import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
+from util.wandb_health import log_grad_health
 
 
 def _stack_sketches(sketches, device):
@@ -64,6 +65,17 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max
             grad_norm = torch.norm(torch.stack(
                 [p.grad.detach().norm() for p in model.parameters() if p.grad is not None]))
         finite = bool(torch.isfinite(grad_norm))
+
+        # per-component grad-health bars (grads are unscaled here; before optimizer.step)
+        if utils.is_main_process() and global_step % 100 == 0:
+            log_grad_health(model, global_step, wandb_run, groups={
+                'backbone':    ('backbone',),
+                'transformer': ('transformer',),
+                'heads':       ('class_embed', 'bbox_embed'),
+                'sketch':      ('sketch_encoder', 'sketch_proj', 'fuse_conv', 'query_fuse'),
+                'input_proj':  ('input_proj',),
+                'query':       ('query_embed',),
+            })
 
         if scaler is not None:
             scaler.step(optimizer)                # internally a no-op if grads are inf/NaN
