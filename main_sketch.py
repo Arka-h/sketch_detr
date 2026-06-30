@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
 
 import util.misc as utils
 from datasets.coco_sketch import build as build_sketch_dataset
@@ -75,7 +75,10 @@ def main(args):
     dataset_val = build_sketch_dataset('val', args)
     base_ds = dataset_val.build_seed14_binary_gt()
 
-    sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+    if args.distributed:
+        sampler_val = DistributedSampler(dataset_val, shuffle=False)
+    else:
+        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     data_loader_val = DataLoader(dataset_val, args.batch_size, sampler=sampler_val,
                                  drop_last=False, collate_fn=utils.collate_fn,
                                  num_workers=args.num_workers)
@@ -132,7 +135,10 @@ def main(args):
         return
 
     dataset_train = build_sketch_dataset('train', args)
-    sampler_train = torch.utils.data.RandomSampler(dataset_train)
+    if args.distributed:
+        sampler_train = DistributedSampler(dataset_train)
+    else:
+        sampler_train = torch.utils.data.RandomSampler(dataset_train)
     batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, args.batch_size, drop_last=True)
     data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                    collate_fn=utils.collate_fn, num_workers=args.num_workers)
@@ -141,6 +147,8 @@ def main(args):
     print(f"Start training (amp={args.amp})")
     start = time.time()
     for epoch in range(args.start_epoch, args.epochs):
+        if args.distributed:
+            sampler_train.set_epoch(epoch)
         train_stats, global_step = train_one_epoch(
             model, criterion, data_loader_train, optimizer, device, epoch,
             args.clip_max_norm, scaler=scaler, wandb_run=wandb_run, global_step=global_step)
