@@ -17,6 +17,8 @@ not_tracked_dir/
 .vscode
 
 # Sketch-DETR baseline: generated artifacts (not source)
+# .env holds WANDB_API_KEY — never commit; use .env.example
+.env
 outputs/
 logs/
 annotations/temp_json_*.json
