@@ -146,6 +146,7 @@ def main(args):
     scaler = torch.cuda.amp.GradScaler() if args.amp else None
     print(f"Start training (amp={args.amp})")
     start = time.time()
+    best_ap = 0.0
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             sampler_train.set_epoch(epoch)
@@ -160,11 +161,21 @@ def main(args):
                                   'epoch': epoch, 'global_step': global_step,
                                   'wandb_run_id': wandb_run_id, 'args': args},
                                  output_dir / 'checkpoint.pth')
+            # back up latest checkpoint to wandb, overwriting each epoch (bounded storage)
+            if wandb_run is not None:
+                wandb.save(str(output_dir / 'checkpoint.pth'), base_path=str(output_dir), policy='now')
         do_eval = (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1
         if not do_eval:
             continue
         stats, _ = evaluate(model, postprocessors, data_loader_val, base_ds, device)
         bb = stats['coco_eval_bbox']
+        # keep + upload best_AP (by mAP); overwrites each improvement -> one extra file/run
+        if output_dir and utils.is_main_process() and bb[0] > best_ap:
+            best_ap = bb[0]
+            import shutil
+            shutil.copyfile(output_dir / 'checkpoint.pth', output_dir / 'best_AP.pth')
+            if wandb_run is not None:
+                wandb.save(str(output_dir / 'best_AP.pth'), base_path=str(output_dir), policy='now')
         print(f"[epoch {epoch}] mAP={bb[0]:.4f} AP50={bb[1]:.4f} AP75={bb[2]:.4f} "
               f"AP_s={bb[3]:.4f} AP_m={bb[4]:.4f} AP_l={bb[5]:.4f}")
         if wandb_run is not None:
