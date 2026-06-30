@@ -49,7 +49,11 @@ echo "[run_job] holdout(SetB if open): backpack bicycle clock couch dog elephant
     --lr 1e-4 --weight_decay 1e-4 --clip_max_norm 0.1 \
     --batch_size "$BS" --num_workers "$WORKERS" \
     --eval_every "$EVAL_EVERY" \
-    --output_dir "$OUT" 2>&1 | tee "$OUT/train.log"
+    ${WANDB:+--wandb --wandb_mode "${WANDB_MODE:-online}"} \
+    --output_dir "$OUT" 2>&1 | tee -a "$OUT/train.log"
+# wandb: set WANDB=1 (project 'sketch_detr', entity aurkohaldi). WANDB_MODE=offline on an
+# offline cluster (sync later with `wandb sync wandb/offline-run-*`). Auto-resumes from
+# $OUT/checkpoint.pth on relaunch (cluster requeue-safe). tee -a so resumes append.
 # NOTE: training runs fast (AMP, seeded, non-strict kernels). The OFFICIAL reported
 # number is a SEPARATE deterministic eval pass on the best checkpoint:
 #   python main_sketch.py --eval --deterministic --sketch_cond <C> --sketch_ckpt <ζ> \

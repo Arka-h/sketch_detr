@@ -49,6 +49,20 @@ WORLD=open DATASET=qd COND=encoder_concat CKPT=checkpoints/zeta_ow_r50sgd.pth \
 - Job B sanity: OW mAP ≪ CW mAP. If OW ≈ CW → suspect a leak, re-check the partition.
 - Each run writes `provenance.txt` (commit, seed, Set B list) + `log.txt` (per-epoch 12-stat).
 
+## Observability, resume & cluster
+
+- **Auto-resume:** relaunching with the same `OUT=` picks up `OUT/checkpoint.pth` automatically
+  (model + optimizer + lr_scheduler + epoch + global_step + wandb_run_id). Requeue-safe.
+- **wandb** (project `sketch_detr`, entity `aurkohaldi`): set `WANDB=1` (and `WANDB_MODE=offline`
+  on air-gapped clusters; `wandb sync wandb/offline-run-*` later). Logs per-iter loss
+  components / lr / **grad_norm** / grad-skip count, per-epoch eval 12-stat, and
+  **per-component gradient histograms** via `wandb.watch(model, log="all")`. The same run id is
+  stored in the checkpoint so a requeue continues the same wandb run.
+- **NaN/overflow guard:** non-finite grads skip the optimizer step (counted as `grad_skips`);
+  the first ~few iters are normal AMP `GradScaler` warmup skips.
+- **SLURM:** `scripts/job.sbatch` — `--requeue` + USR1 trap; auto-resume makes preemption seamless.
+  `sbatch --export=ALL,WORLD=...,DATASET=...,COND=...,CKPT=...,OUT=... scripts/job.sbatch`.
+
 ## Eval-only (any saved checkpoint)
 
 ```bash

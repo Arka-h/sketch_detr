@@ -17,12 +17,13 @@ def _stack_sketches(sketches, device):
 
 
 def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max_norm=0,
-                    scaler=None):
+                    scaler=None, wandb_run=None, global_step=0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = f'Epoch: [{epoch}]'
     print_freq = 200
 
@@ -51,23 +52,43 @@ def train_one_epoch(model, criterion, data_loader, optimizer, device, epoch, max
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(losses).backward()
-            if max_norm > 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.unscale_(optimizer)            # unscale so grad_norm is the true norm
         else:
             losses.backward()
-            if max_norm > 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-            optimizer.step()
 
+        # grad norm (clip returns it); finite-check is the NaN/overflow guard. With AMP this is
+        # normal during scaler warmup (fp16 overflow) — scaler.step() then auto-skips that iter.
+        if max_norm > 0:
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        else:
+            grad_norm = torch.norm(torch.stack(
+                [p.grad.detach().norm() for p in model.parameters() if p.grad is not None]))
+        finite = bool(torch.isfinite(grad_norm))
+
+        if scaler is not None:
+            scaler.step(optimizer)                # internally a no-op if grads are inf/NaN
+            scaler.update()
+        elif finite:
+            optimizer.step()
+        if not finite:
+            metric_logger.meters.setdefault('grad_skips', utils.SmoothedValue(window_size=1))
+            metric_logger.update(grad_skips=1.0)
+
+        gn = float(grad_norm) if finite else 0.0   # always update meter (count>0) → no print crash
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled,
                              class_error=loss_dict_reduced['class_error'])
-        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"], grad_norm=gn)
+        if wandb_run is not None:
+            wandb_run.log({'train/loss': loss_value, 'train/grad_norm': gn,
+                           'train/class_error': float(loss_dict_reduced['class_error']),
+                           'train/lr': optimizer.param_groups[0]['lr'],
+                           **{f'train/{k}': float(v) for k, v in loss_dict_reduced_scaled.items()}},
+                          step=global_step)
+        global_step += 1
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    return stats, global_step
 
 
 @torch.no_grad()

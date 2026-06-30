@@ -41,6 +41,13 @@ def get_args_parser():
     parser.add_argument('--no_amp', dest='amp', action='store_false',
                         help='disable mixed-precision training (AMP on by default)')
     parser.set_defaults(amp=True)
+    # wandb (project fixed to 'sketch_detr'); off unless --wandb
+    parser.add_argument('--wandb', action='store_true', help='log to Weights & Biases')
+    parser.add_argument('--wandb_mode', default='online', choices=['online', 'offline', 'disabled'])
+    parser.add_argument('--wandb_entity', default='aurkohaldi')
+    parser.add_argument('--wandb_name', default='', help='run name (default: output dir name)')
+    parser.add_argument('--wandb_watch_freq', default=500, type=int,
+                        help='wandb.watch log_freq for per-component grad histograms')
     parser.add_argument('--gt_calib', action='store_true',
                         help='run GT-calibration probe on val seed-14 binary GT and exit')
     return parser
@@ -92,6 +99,12 @@ def main(args):
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_drop)
 
     output_dir = Path(args.output_dir) if args.output_dir else None
+    # auto-resume: relaunch (e.g. cluster requeue) picks up the last checkpoint automatically
+    if not args.resume and output_dir is not None and (output_dir / 'checkpoint.pth').exists():
+        args.resume = str(output_dir / 'checkpoint.pth')
+        print(f"[auto-resume] found {args.resume}")
+    global_step = 0
+    wandb_run_id = None
     if args.resume:
         ck = torch.load(args.resume, map_location='cpu')
         model_without_ddp.load_state_dict(ck['model'])
@@ -99,6 +112,19 @@ def main(args):
             optimizer.load_state_dict(ck['optimizer'])
             lr_scheduler.load_state_dict(ck['lr_scheduler'])
             args.start_epoch = ck['epoch'] + 1
+            global_step = ck.get('global_step', 0)
+            wandb_run_id = ck.get('wandb_run_id')
+
+    # wandb (project 'sketch_detr'); resumes the same run on requeue via stored run id
+    wandb_run = None
+    if getattr(args, 'wandb', False) and utils.is_main_process():
+        import wandb
+        wandb_run = wandb.init(project='sketch_detr', entity=args.wandb_entity or None,
+                               mode=args.wandb_mode, id=wandb_run_id, resume='allow',
+                               name=args.wandb_name or (output_dir.name if output_dir else None),
+                               config=vars(args))
+        wandb_run_id = wandb_run.id
+        wandb.watch(model, log='all', log_freq=args.wandb_watch_freq)  # per-component grad histograms
 
     if args.eval:
         stats, _ = evaluate(model, postprocessors, data_loader_val, base_ds, device)
@@ -115,14 +141,16 @@ def main(args):
     print(f"Start training (amp={args.amp})")
     start = time.time()
     for epoch in range(args.start_epoch, args.epochs):
-        train_stats = train_one_epoch(model, criterion, data_loader_train, optimizer,
-                                      device, epoch, args.clip_max_norm, scaler=scaler)
+        train_stats, global_step = train_one_epoch(
+            model, criterion, data_loader_train, optimizer, device, epoch,
+            args.clip_max_norm, scaler=scaler, wandb_run=wandb_run, global_step=global_step)
         lr_scheduler.step()
         if output_dir and utils.is_main_process():
             utils.save_on_master({'model': model_without_ddp.state_dict(),
                                   'optimizer': optimizer.state_dict(),
                                   'lr_scheduler': lr_scheduler.state_dict(),
-                                  'epoch': epoch, 'args': args},
+                                  'epoch': epoch, 'global_step': global_step,
+                                  'wandb_run_id': wandb_run_id, 'args': args},
                                  output_dir / 'checkpoint.pth')
         do_eval = (epoch + 1) % args.eval_every == 0 or epoch == args.epochs - 1
         if not do_eval:
@@ -131,6 +159,11 @@ def main(args):
         bb = stats['coco_eval_bbox']
         print(f"[epoch {epoch}] mAP={bb[0]:.4f} AP50={bb[1]:.4f} AP75={bb[2]:.4f} "
               f"AP_s={bb[3]:.4f} AP_m={bb[4]:.4f} AP_l={bb[5]:.4f}")
+        if wandb_run is not None:
+            keys = ['mAP', 'AP50', 'AP75', 'AP_s', 'AP_m', 'AP_l',
+                    'AR_1', 'AR_10', 'AR_100', 'AR_s', 'AR_m', 'AR_l']
+            wandb_run.log({**{f'eval/{k}': v for k, v in zip(keys, bb)}, 'epoch': epoch},
+                          step=global_step)
         if output_dir and utils.is_main_process():
             log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                          'coco_eval_bbox': bb, 'epoch': epoch}

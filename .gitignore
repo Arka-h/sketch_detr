@@ -20,4 +20,5 @@ not_tracked_dir/
 outputs/
 logs/
 annotations/temp_json_*.json
+annotations/subsets/
 wandb/
