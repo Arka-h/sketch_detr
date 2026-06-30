@@ -32,6 +32,8 @@ def get_args_parser():
     parser.add_argument('--sketch_dataset', default='qd', choices=['qd', 'sketchy'])
     parser.add_argument('--num_sketches', default=1, type=int)
     parser.add_argument('--data_frac', default=1.0, type=float)
+    parser.add_argument('--subset_seed', default=14, type=int,
+                        help='Seed for the seeded/nested data_frac subset draw (datasets/subset_select.py).')
     parser.add_argument('--deterministic', action='store_true',
                         help='enable bit-deterministic eval (handover §4)')
     parser.add_argument('--eval_every', default=5, type=int,

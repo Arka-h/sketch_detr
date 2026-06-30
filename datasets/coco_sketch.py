@@ -28,6 +28,8 @@ from tqdm import tqdm
 
 import datasets.transforms as T
 from datasets.coco import ConvertCocoPolysToMask
+from datasets.subset_select import (select_nested_subset_ids, persist_subset_bundle,
+                                    train_cache_path, cache_is_valid, write_train_cache)
 from util.misc import get_rank, is_dist_avail_and_initialized
 import torch.distributed as dist
 
@@ -86,16 +88,25 @@ class CocoDetectionSketch(torchvision.datasets.CocoDetection):
 
     def __init__(self, image_set, img_folder, ann_file, transforms, return_masks,
                  data_frac=1.0, train_scheme_world="open", sketch_root=None,
-                 num_sketches=1, seed14=14):
+                 num_sketches=1, seed14=14, subset_seed=14):
         self.image_set = image_set
         self.data_frac = data_frac
+        self.subset_seed = subset_seed
         self.train_scheme_world = train_scheme_world
         self.num_sketches = num_sketches
         self.seed14 = seed14
         self.sketch_root = sketch_root if sketch_root is not None \
             else os.environ.get('SKETCH_HOME', '/mnt/1tb/data')
 
-        with open(ann_file) as f:
+        # [upgrade] versioned cache: reuse a valid pre-filtered train-json instead of
+        # rescanning + redrawing. Key = sketch·world·frac·seed + SUBSET_LOGIC_VERSION
+        # (datasets/subset_select.py), so a logic/seed/frac change auto-invalidates.
+        self._cache_dir = os.path.join('annotations', 'subsets')
+        self._train_cache = train_cache_path(self._cache_dir, self.sketch_name,
+                                             self.train_scheme_world, self.data_frac, self.subset_seed)
+        self._use_cache = (image_set == 'train' and cache_is_valid(
+            self._train_cache, self.sketch_name, self.train_scheme_world, self.data_frac, self.subset_seed))
+        with open(self._train_cache if self._use_cache else ann_file) as f:
             json_file = json.load(f)
 
         self.id2class, self.class2id = {}, {}
@@ -123,39 +134,53 @@ class CocoDetectionSketch(torchvision.datasets.CocoDetection):
             visible = set(seen)
         self.visible_cats = visible
 
-        annotate, seen_image_ids = [], {}
-        for anno in json_file['annotations']:
-            cname = self.id2class[anno['category_id']]
-            if cname in visible:
-                annotate.append(anno)
-                seen_image_ids.setdefault(anno['category_id'], []).append(anno['image_id'])
+        if self._use_cache:
+            print(f"[holdout] cache HIT -> {self._train_cache} (skipping scan + draw)")
+            final_temp_file = self._train_cache
+        else:
+            annotate, seen_image_ids = [], {}
+            for anno in json_file['annotations']:
+                cname = self.id2class[anno['category_id']]
+                if cname in visible:
+                    annotate.append(anno)
+                    seen_image_ids.setdefault(anno['category_id'], []).append(anno['image_id'])
 
-        if self.image_set == 'train' and self.data_frac < 1.0:
-            rng = np.random.RandomState(0)
-            sub = {k: set(rng.choice(v, int(self.data_frac * len(v)), replace=False).tolist())
-                   for k, v in seen_image_ids.items()}
-            seen_image_ids = sub
+            if self.image_set == 'train' and self.data_frac < 1.0:
+                # [upgrade] seeded (subset_seed), replace=False, NESTED 0.25 ⊂ 0.50 ⊂ 1.00
+                # subsample of the seen images (was an independent per-fraction RandomState(0)
+                # draw on a fraction of annotations; now a fraction of unique images, nested).
+                seen_image_ids = select_nested_subset_ids(seen_image_ids, self.data_frac, self.subset_seed)
+                keep_imgs = set().union(*seen_image_ids.values()) if seen_image_ids else set()
+                annotate = [a for a in annotate if a['image_id'] in keep_imgs]
+                if get_rank() == 0:
+                    per_class = {k: len(v) for k, v in seen_image_ids.items()}
+                    persist_subset_bundle(out_dir=self._cache_dir, sketch_name=self.sketch_name,
+                                          world=self.train_scheme_world, data_frac=self.data_frac,
+                                          subset_seed=self.subset_seed, image_ids=keep_imgs,
+                                          per_class_counts=per_class, id2class=self.id2class)
+
             keep_imgs = set().union(*seen_image_ids.values()) if seen_image_ids else set()
-            annotate = [a for a in annotate if a['image_id'] in keep_imgs]
+            images = [im for im in json_file['images'] if im['id'] in keep_imgs]
+            json_file['annotations'] = annotate
+            json_file['images'] = images
+            print(f"[holdout] scheme={train_scheme_world} set={image_set} "
+                  f"visible_cats={len(visible)} imgs={len(images)} anns={len(annotate)} "
+                  f"unseen={len(unseen)} seen={len(seen)}")
 
-        keep_imgs = set().union(*seen_image_ids.values()) if seen_image_ids else set()
-        images = [im for im in json_file['images'] if im['id'] in keep_imgs]
-        json_file['annotations'] = annotate
-        json_file['images'] = images
-        print(f"[holdout] scheme={train_scheme_world} set={image_set} "
-              f"visible_cats={len(visible)} imgs={len(images)} anns={len(annotate)} "
-              f"unseen={len(unseen)} seen={len(seen)}")
+            os.makedirs('annotations', exist_ok=True)
+            temp_ann_file = os.path.join(
+                f'annotations/temp_json_{self.sketch_name}_{image_set}_{train_scheme_world}.json')
+            if get_rank() == 0:
+                with open(temp_ann_file, 'w') as f:
+                    json.dump(json_file, f)
+                if self.image_set == 'train':
+                    write_train_cache(self._train_cache, json_file, self.sketch_name,
+                                      self.train_scheme_world, self.data_frac, self.subset_seed)
+            if is_dist_avail_and_initialized():
+                dist.barrier()
+            final_temp_file = temp_ann_file
 
-        os.makedirs('annotations', exist_ok=True)
-        temp_ann_file = os.path.join(
-            f'annotations/temp_json_{self.sketch_name}_{image_set}_{train_scheme_world}.json')
-        if get_rank() == 0:
-            with open(temp_ann_file, 'w') as f:
-                json.dump(json_file, f)
-        if is_dist_avail_and_initialized():
-            dist.barrier()
-
-        super().__init__(img_folder, temp_ann_file)
+        super().__init__(img_folder, final_temp_file)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
 
@@ -366,6 +391,7 @@ def build(image_set, args):
     img_folder, ann_file = PATHS[image_set]
     kw = dict(transforms=make_coco_transforms(image_set), return_masks=args.masks,
               data_frac=getattr(args, 'data_frac', 1.0),
+              subset_seed=getattr(args, 'subset_seed', 14),
               train_scheme_world=getattr(args, 'train_scheme_world', 'closed'),
               num_sketches=getattr(args, 'num_sketches', 1))
     cls = CocoDetectionSketchy if getattr(args, 'sketch_dataset', 'qd') == 'sketchy' else CocoDetectionQD
