@@ -43,6 +43,7 @@ def get_args_parser():
     parser.set_defaults(amp=True)
     # wandb (project fixed to 'sketch_detr'); off unless --wandb
     parser.add_argument('--wandb', action='store_true', help='log to Weights & Biases')
+    parser.add_argument('--wandb_histograms', action='store_true', default=False, help='Enable wandb.watch param/grad HISTOGRAMS. Default OFF: the histogram flush spikes GPU mem and OOMs 48GB cards.')
     parser.add_argument('--wandb_mode', default='online', choices=['online', 'offline', 'disabled'])
     parser.add_argument('--wandb_entity', default='aurkohaldi')
     parser.add_argument('--wandb_name', default='', help='run name (default: output dir name)')
@@ -66,8 +67,11 @@ def main(args):
     print(args)
     device = torch.device(args.device)
 
-    if args.deterministic:
-        set_determinism(args.seed)            # BEFORE model build (handover §4)
+    # Determinism BEFORE model build (handover §4). clean_run convention: eval is ALWAYS
+    # deterministic; --deterministic additionally makes training reproducible (slower).
+    if args.deterministic or args.eval:
+        set_determinism(args.seed)
+        print(f"[determinism] on (eval={args.eval}, --deterministic={args.deterministic})")
     else:
         torch.manual_seed(args.seed); np.random.seed(args.seed); random.seed(args.seed)
 
@@ -129,7 +133,7 @@ def main(args):
         wandb_run_id = wandb_run.id
         from util.wandb_health import log_run_provenance
         log_run_provenance(wandb_run, repo_dir=os.path.dirname(os.path.abspath(__file__)))
-        wandb.watch(model, log='all', log_freq=args.wandb_watch_freq)  # per-component grad histograms
+        wandb.watch(model, log=("all" if args.wandb_histograms else None), log_freq=args.wandb_watch_freq)  # per-component grad histograms
 
     if args.eval:
         stats, _ = evaluate(model, postprocessors, data_loader_val, base_ds, device)

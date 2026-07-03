@@ -28,7 +28,7 @@ import numpy as np
 # produced image set. Cached train-jsons stamped with a different version are
 # treated as stale and regenerated — so a logic change can never be silently
 # served from an old cache (the failure mode the unseeded draw created).
-SUBSET_LOGIC_VERSION = "v1-seeded-nested-fullUnseenExcl"
+SUBSET_LOGIC_VERSION = "v2-seeded-nested-fullUnseenExcl-wired"
 
 
 def open_world_split(all_categories: List[str]) -> Tuple[List[str], List[str]]:

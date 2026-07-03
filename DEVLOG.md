@@ -34,8 +34,21 @@ All metrics reported as **decimals** (e.g. 0.419), never percentage points.
   `--sketch_ckpt` loads it directly.
 - Known confound: OW ζ is 331-class, CW ζ is 56-class (asymmetric); see DEVIATIONS.md D2.
 
+## OW data convention aligned to clip_ddetr_clean_run (2026-07-03)
+- **Leak-free OW exclusion ported.** `coco_sketch.py` now wires `collect_image_ids` +
+  `finalize_train_ids` (already present in `subset_select.py`) instead of the manual
+  `if cname in visible` + `select_nested_subset_ids` path, which skipped exclusion entirely at
+  `data_frac=1.0`. A training image containing ANY held-out (Set B) instance is now excluded in
+  full at every fraction. Verified on real COCO train: OW-train 58,275 imgs, **0 overlap** with
+  the 40,698 Set-B-containing images; closed-world unchanged at 98,973.
+- Bumped `SUBSET_LOGIC_VERSION → v2-...-wired` (the old `v1` name claimed `fullUnseenExcl` but the
+  wiring didn't honor it, so on-disk `qd_open_frac*` caches were mislabeled leaky) and deleted
+  those stale caches.
+- **Determinism aligned to clean_run:** eval is now ALWAYS deterministic (`args.eval or
+  args.deterministic`), matching clean_run's `args.eval or args.deterministic_eval`.
+
 ## Ready to launch (scripts/RUNBOOK.md + scripts/run_job.sh)
-- Job B (OW) is launch-ready now. Job A fires the moment the CW RN50 lands.
+- Job B (OW) is launch-ready now (leak-free). Job A fires the moment the CW RN50 lands.
 - **Eval protocol:** scores under the thesis §4 seed-14 binary-GT protocol (same as CASF). D1.
 
 See DEVIATIONS.md for the full list of deviations from the paper spec.

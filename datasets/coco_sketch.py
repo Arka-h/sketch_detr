@@ -28,7 +28,7 @@ from tqdm import tqdm
 
 import datasets.transforms as T
 from datasets.coco import ConvertCocoPolysToMask
-from datasets.subset_select import (select_nested_subset_ids, persist_subset_bundle,
+from datasets.subset_select import (collect_image_ids, finalize_train_ids, persist_subset_bundle,
                                     train_cache_path, cache_is_valid, write_train_cache)
 from util.misc import get_rank, is_dist_avail_and_initialized
 import torch.distributed as dist
@@ -138,34 +138,34 @@ class CocoDetectionSketch(torchvision.datasets.CocoDetection):
             print(f"[holdout] cache HIT -> {self._train_cache} (skipping scan + draw)")
             final_temp_file = self._train_cache
         else:
-            annotate, seen_image_ids = [], {}
-            for anno in json_file['annotations']:
-                cname = self.id2class[anno['category_id']]
-                if cname in visible:
-                    annotate.append(anno)
-                    seen_image_ids.setdefault(anno['category_id'], []).append(anno['image_id'])
+            # One pass over annotations, tracking SEEN vs held-out (Set B) image ids.
+            # Leak-free OW path ported from clip_ddetr_clean_run (collect_image_ids +
+            # finalize_train_ids): a training image containing ANY held-out instance is
+            # excluded IN FULL at every data_frac, so the detector never sees Set B.
+            annotate, seen_image_ids, unseen_image_ids = collect_image_ids(
+                json_file, self.id2class, self.all_categories, self.unseen_cats,
+                self.image_set, self.train_scheme_world)
 
-            if self.image_set == 'train' and self.data_frac < 1.0:
-                # [upgrade] seeded (subset_seed), replace=False, NESTED 0.25 ⊂ 0.50 ⊂ 1.00
-                # subsample of the seen images (was an independent per-fraction RandomState(0)
-                # draw on a fraction of annotations; now a fraction of unique images, nested).
-                seen_image_ids = select_nested_subset_ids(seen_image_ids, self.data_frac, self.subset_seed)
-                keep_imgs = set().union(*seen_image_ids.values()) if seen_image_ids else set()
-                annotate = [a for a in annotate if a['image_id'] in keep_imgs]
+            if self.image_set == 'train':
+                # Subset SEEN only (seeded, nested); exclude the FULL held-out set.
+                final_image_ids, per_class = finalize_train_ids(
+                    seen_image_ids, unseen_image_ids, self.data_frac, self.subset_seed)
                 if get_rank() == 0:
-                    per_class = {k: len(v) for k, v in seen_image_ids.items()}
                     persist_subset_bundle(out_dir=self._cache_dir, sketch_name=self.sketch_name,
                                           world=self.train_scheme_world, data_frac=self.data_frac,
-                                          subset_seed=self.subset_seed, image_ids=keep_imgs,
+                                          subset_seed=self.subset_seed, image_ids=final_image_ids,
                                           per_class_counts=per_class, id2class=self.id2class)
+            else:  # val: no subsetting; eval pool = held-out images (seen - unseen)
+                seen_ids = set().union(*seen_image_ids.values()) if seen_image_ids else set()
+                unseen_ids = set().union(*unseen_image_ids.values()) if unseen_image_ids else set()
+                final_image_ids = seen_ids - unseen_ids
 
-            keep_imgs = set().union(*seen_image_ids.values()) if seen_image_ids else set()
-            images = [im for im in json_file['images'] if im['id'] in keep_imgs]
+            images = [im for im in json_file['images'] if im['id'] in final_image_ids]
             json_file['annotations'] = annotate
             json_file['images'] = images
             print(f"[holdout] scheme={train_scheme_world} set={image_set} "
-                  f"visible_cats={len(visible)} imgs={len(images)} anns={len(annotate)} "
-                  f"unseen={len(unseen)} seen={len(seen)}")
+                  f"imgs={len(images)} anns={len(annotate)} "
+                  f"seen={len(seen)} unseen={len(unseen)} (leak-free OW exclusion)")
 
             os.makedirs('annotations', exist_ok=True)
             temp_ann_file = os.path.join(
