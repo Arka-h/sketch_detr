@@ -113,7 +113,9 @@ def main(args):
     global_step = 0
     wandb_run_id = None
     if args.resume:
-        ck = torch.load(args.resume, map_location='cpu')
+        # weights_only=False: our own trusted checkpoints store args (argparse.Namespace),
+        # which torch 2.6+ refuses under the new weights_only=True default.
+        ck = torch.load(args.resume, map_location='cpu', weights_only=False)
         model_without_ddp.load_state_dict(ck['model'])
         if not args.eval and 'optimizer' in ck and 'epoch' in ck:
             optimizer.load_state_dict(ck['optimizer'])

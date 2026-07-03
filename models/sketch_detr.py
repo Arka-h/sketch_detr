@@ -29,7 +29,7 @@ class SketchEncoder(nn.Module):
         self.body.fc = nn.Identity()      # forward → (B,2048) after avgpool+flatten
         self.feat_dim = 2048
         if ckpt_path:
-            ck = torch.load(ckpt_path, map_location='cpu')
+            ck = torch.load(ckpt_path, map_location='cpu', weights_only=False)
             # format-agnostic: accept backbone_state | model_state | model | state_dict | raw,
             # strip any 'module.' (DDP) prefix and the classifier head (fc.*).
             val_acc = ck.get('val_acc') if isinstance(ck, dict) else None
@@ -144,7 +144,7 @@ def build(args):
     # init from COCO-pretrained DETR (skip the 92-way class head)
     init_ckpt = getattr(args, 'detr_init', None)
     if init_ckpt:
-        ck = torch.load(init_ckpt, map_location='cpu')
+        ck = torch.load(init_ckpt, map_location='cpu', weights_only=False)
         sd = ck['model'] if 'model' in ck else ck
         sd = {k: v for k, v in sd.items() if not k.startswith('class_embed.')}
         missing, unexpected = model.load_state_dict(sd, strict=False)
